@@ -15,7 +15,7 @@ import Animated, {
   runOnJS,
   cancelAnimation,
 } from 'react-native-reanimated';
-import Svg, { Circle, Path, Line, Defs, LinearGradient, Stop, G } from 'react-native-svg';
+import Svg, { Circle, Path, Line, Defs, LinearGradient, RadialGradient, Stop, G, Ellipse, Rect } from 'react-native-svg';
 import { useLocalSearchParams, useRouter, Stack } from 'expo-router';
 import * as Haptics from 'expo-haptics';
 import { PARKING_ZONES } from '../../constants/parkingZones';
@@ -133,6 +133,174 @@ function calcAngle(absX: number, absY: number, dialPageX: number, dialPageY: num
   return ((raw % 360) + 360) % 360;
 }
 
+// ─── Sky scene ──────────────────────────────────────────────────────────────
+
+const SKY_W = SCREEN_W;
+const SKY_H = 200;
+
+/** Lerp tra due colori esadecimali */
+function lerpHex(a: string, b: string, t: number): string {
+  const ah = parseInt(a.slice(1), 16);
+  const bh = parseInt(b.slice(1), 16);
+  const ar = (ah >> 16) & 0xff, ag = (ah >> 8) & 0xff, ab = ah & 0xff;
+  const br = (bh >> 16) & 0xff, bg = (bh >> 8) & 0xff, bb = bh & 0xff;
+  const rr = Math.round(ar + (br - ar) * t);
+  const rg = Math.round(ag + (bg - ag) * t);
+  const rb = Math.round(ab + (bb - ab) * t);
+  return `#${((rr << 16) | (rg << 8) | rb).toString(16).padStart(6, '0')}`;
+}
+
+interface SkyPalette { top: string; bottom: string; sun: string; glow: string }
+
+/** Restituisce la palette cielo in base all'ora (0-24) */
+function skyPaletteForHour(hour: number): SkyPalette {
+  // checkpoint: notte, alba, mattina, mezzogiorno, pomeriggio, tramonto, sera, notte
+  const stops: Array<{ h: number } & SkyPalette> = [
+    { h: 0,  top: '#0a0e2e', bottom: '#1a2050', sun: '#ffd700', glow: '#ffd70040' },
+    { h: 5,  top: '#1a1a4e', bottom: '#2d2060', sun: '#ffd700', glow: '#ffd70040' },
+    { h: 6,  top: '#ff6b35', bottom: '#ffb347', sun: '#fff176', glow: '#ffb34780' },
+    { h: 8,  top: '#4a90d9', bottom: '#87ceeb', sun: '#fffde7', glow: '#fff9c440' },
+    { h: 12, top: '#1565c0', bottom: '#42a5f5', sun: '#ffffff', glow: '#ffffff50' },
+    { h: 16, top: '#2979ff', bottom: '#64b5f6', sun: '#fffde7', glow: '#fff9c440' },
+    { h: 18, top: '#e65100', bottom: '#ff8a65', sun: '#ffeb3b', glow: '#ffeb3b80' },
+    { h: 20, top: '#4a148c', bottom: '#7b1fa2', sun: '#ff6f00', glow: '#ff6f0060' },
+    { h: 22, top: '#1a237e', bottom: '#283593', sun: '#ffd700', glow: '#ffd70040' },
+    { h: 24, top: '#0a0e2e', bottom: '#1a2050', sun: '#ffd700', glow: '#ffd70040' },
+  ];
+  const h = ((hour % 24) + 24) % 24;
+  let i = stops.findIndex(s => s.h > h) - 1;
+  if (i < 0) i = 0;
+  if (i >= stops.length - 1) i = stops.length - 2;
+  const a = stops[i], b = stops[i + 1];
+  const t = (h - a.h) / (b.h - a.h);
+  return {
+    top:    lerpHex(a.top,    b.top,    t),
+    bottom: lerpHex(a.bottom, b.bottom, t),
+    sun:    lerpHex(a.sun,    b.sun,    t),
+    glow:   a.glow,
+  };
+}
+
+/** Posizione del sole: arco parabolico da sinistra (alba 6h) a destra (tramonto 20h) */
+function sunPosition(hour: number): { x: number; y: number } {
+  const sunrise = 6, sunset = 20;
+  const clampedH = Math.max(sunrise, Math.min(sunset, hour));
+  const t = (clampedH - sunrise) / (sunset - sunrise); // 0=alba, 1=tramonto
+  const x = SKY_W * 0.1 + t * SKY_W * 0.8;
+  // parabola: y minimo (alto) a t=0.5
+  const y = SKY_H * 0.85 - Math.sin(t * Math.PI) * SKY_H * 0.72;
+  return { x, y };
+}
+
+function SkyScene({ endHour }: { endHour: number }) {
+  const palette = skyPaletteForHour(endHour);
+  const sun = sunPosition(endHour);
+  const isNight = endHour < 6 || endHour >= 20;
+
+  return (
+    <Svg width={SKY_W} height={SKY_H} style={{ position: 'absolute', top: 0, left: 0 }}>
+      <Defs>
+        <LinearGradient id="skyGrad" x1="0" y1="0" x2="0" y2="1">
+          <Stop offset="0" stopColor={palette.top} stopOpacity="1" />
+          <Stop offset="1" stopColor={palette.bottom} stopOpacity="1" />
+        </LinearGradient>
+        <RadialGradient id="sunGlow" cx="50%" cy="50%" r="50%">
+          <Stop offset="0" stopColor={palette.sun} stopOpacity="0.5" />
+          <Stop offset="1" stopColor={palette.sun} stopOpacity="0" />
+        </RadialGradient>
+        <RadialGradient id="moonGlow" cx="50%" cy="50%" r="50%">
+          <Stop offset="0" stopColor="#c8d6f0" stopOpacity="0.3" />
+          <Stop offset="1" stopColor="#c8d6f0" stopOpacity="0" />
+        </RadialGradient>
+      </Defs>
+
+      {/* Sfondo cielo */}
+      <Rect x="0" y="0" width={SKY_W} height={SKY_H} fill="url(#skyGrad)" />
+
+      {/* Stelle (solo di notte) */}
+      {isNight && [
+        [40, 20], [80, 45], [130, 15], [200, 35], [260, 10], [310, 40],
+        [350, 18], [60, 70], [170, 60], [280, 65], [330, 80], [100, 90],
+      ].map(([sx, sy], i) => (
+        <Circle key={i} cx={sx} cy={sy} r={1 + (i % 2) * 0.5}
+          fill="#ffffff" opacity={0.6 + (i % 3) * 0.15} />
+      ))}
+
+      {/* Luna (di notte) */}
+      {isNight && (
+        <G>
+          <Circle cx={SKY_W * 0.75} cy={40} r={28} fill="url(#moonGlow)" />
+          <Circle cx={SKY_W * 0.75} cy={40} r={14} fill="#e8f0fe" opacity={0.95} />
+          <Circle cx={SKY_W * 0.75 + 5} cy={36} r={11} fill={palette.top} opacity={0.9} />
+        </G>
+      )}
+
+      {/* Alone del sole */}
+      {!isNight && (
+        <G>
+          <Circle cx={sun.x} cy={sun.y} r={38} fill="url(#sunGlow)" />
+        </G>
+      )}
+
+      {/* Sole */}
+      {!isNight && (
+        <G>
+          {/* Raggi */}
+          {Array.from({ length: 8 }).map((_, i) => {
+            const angle = (i / 8) * Math.PI * 2;
+            const r1 = 17, r2 = 24;
+            return (
+              <Line
+                key={i}
+                x1={sun.x + Math.cos(angle) * r1}
+                y1={sun.y + Math.sin(angle) * r1}
+                x2={sun.x + Math.cos(angle) * r2}
+                y2={sun.y + Math.sin(angle) * r2}
+                stroke={palette.sun}
+                strokeWidth={2}
+                strokeLinecap="round"
+                opacity={0.8}
+              />
+            );
+          })}
+          {/* Disco solare */}
+          <Circle cx={sun.x} cy={sun.y} r={13} fill={palette.sun} />
+        </G>
+      )}
+
+      {/* Nuvola 1 */}
+      <G opacity={isNight ? 0.15 : 0.85}>
+        <Ellipse cx={SKY_W * 0.2} cy={SKY_H * 0.45} rx={38} ry={16} fill="#fff" />
+        <Ellipse cx={SKY_W * 0.2 - 18} cy={SKY_H * 0.45 + 4} rx={22} ry={12} fill="#fff" />
+        <Ellipse cx={SKY_W * 0.2 + 20} cy={SKY_H * 0.45 + 4} rx={26} ry={13} fill="#fff" />
+        <Ellipse cx={SKY_W * 0.2 + 4} cy={SKY_H * 0.45 - 8} rx={20} ry={11} fill="#fff" />
+      </G>
+
+      {/* Nuvola 2 */}
+      <G opacity={isNight ? 0.1 : 0.7}>
+        <Ellipse cx={SKY_W * 0.72} cy={SKY_H * 0.32} rx={44} ry={14} fill="#fff" />
+        <Ellipse cx={SKY_W * 0.72 - 22} cy={SKY_H * 0.32 + 3} rx={24} ry={11} fill="#fff" />
+        <Ellipse cx={SKY_W * 0.72 + 22} cy={SKY_H * 0.32 + 3} rx={28} ry={12} fill="#fff" />
+        <Ellipse cx={SKY_W * 0.72} cy={SKY_H * 0.32 - 7} rx={22} ry={10} fill="#fff" />
+      </G>
+
+      {/* Nuvola 3 piccola */}
+      <G opacity={isNight ? 0.08 : 0.55}>
+        <Ellipse cx={SKY_W * 0.5} cy={SKY_H * 0.22} rx={28} ry={10} fill="#fff" />
+        <Ellipse cx={SKY_W * 0.5 - 12} cy={SKY_H * 0.22 + 2} rx={16} ry={8} fill="#fff" />
+        <Ellipse cx={SKY_W * 0.5 + 14} cy={SKY_H * 0.22 + 2} rx={18} ry={8} fill="#fff" />
+      </G>
+
+      {/* Fade in basso verso bianco */}
+      <LinearGradient id="fadeDown" x1="0" y1="0" x2="0" y2="1">
+        <Stop offset="0.55" stopColor="#ffffff" stopOpacity="0" />
+        <Stop offset="1" stopColor="#ffffff" stopOpacity="1" />
+      </LinearGradient>
+      <Rect x="0" y="0" width={SKY_W} height={SKY_H} fill="url(#fadeDown)" />
+    </Svg>
+  );
+}
+
 export default function StartParkingScreen() {
   const { zoneId } = useLocalSearchParams<{ zoneId: string }>();
   const router = useRouter();
@@ -155,6 +323,14 @@ export default function StartParkingScreen() {
 
   const hasSelection = arcDeg > 1;
   const durationMinutes = hasSelection ? angleToMinutes(arcDeg) : 0;
+
+  // Ora di termine per animazione cielo
+  const endHour = useMemo(() => {
+    const now = new Date();
+    const endMs = now.getTime() + durationMinutes * 60000;
+    const end = new Date(endMs);
+    return end.getHours() + end.getMinutes() / 60;
+  }, [durationMinutes]);
 
   // Funzioni JS chiamabili da worklet
   const triggerHaptic = useCallback(() => {
@@ -251,6 +427,9 @@ export default function StartParkingScreen() {
       <Stack.Screen options={{ title: '' }} />
 
       <View style={styles.container}>
+
+        {/* Scena cielo animata */}
+        <SkyScene endHour={hasSelection ? endHour : new Date().getHours() + new Date().getMinutes() / 60} />
 
         {/* Dial — posizione fissa, non si sposta mai */}
         <GestureDetector gesture={panGesture}>
@@ -373,11 +552,11 @@ const styles = StyleSheet.create({
   dialWrapper: {
     width: DIAL_SIZE,
     height: DIAL_SIZE,
-    marginTop: 180,
+    marginTop: SKY_H - 20,
   },
   zoneNameBlock: {
     position: 'absolute',
-    top: -16,
+    top: SKY_H - 8,
     left: Spacing.lg,
     right: Spacing.lg,
     flexDirection: 'row',
@@ -406,12 +585,12 @@ const styles = StyleSheet.create({
   // Titolo e badge sono assoluti: non spostano il dial
   titleBlock: {
     position: 'absolute',
-    top: 28,
+    top: SKY_H + 16,
     left: Spacing.lg,
     right: Spacing.lg,
     alignItems: 'center',
-    justifyContent: 'flex-end',
-    height: 160,
+    justifyContent: 'flex-start',
+    height: 100,
   },
   giraTitle: {
     fontSize: 64,
@@ -437,7 +616,7 @@ const styles = StyleSheet.create({
   },
   termineBadge: {
     position: 'absolute',
-    top: 28 + 160 + Spacing.sm,  // subito sotto il titleBlock
+    top: SKY_H + 16 + 100 + Spacing.sm,
     alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
