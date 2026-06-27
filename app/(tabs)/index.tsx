@@ -243,7 +243,7 @@ export default function HomeScreen() {
               const endTime = session.endTime.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
               const dash = progress * CIRCUM;
               const gap = CIRCUM - dash;
-              let ringColor = Colors.primary;
+              let ringColor: string = Colors.primary;
               if (progress < 0.15) ringColor = Colors.error;
               else if (progress < 0.35) ringColor = Colors.warning;
 
